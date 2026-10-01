@@ -1,0 +1,18 @@
+Version =196611
+ColumnsShown =0
+Begin
+    Action ="MessageBox"
+    Argument ="База данных «Поликлиника» загружена."
+    Argument ="-1"
+    Argument ="0"
+    Argument ="Поликлиника"
+End
+Begin
+    Action ="OpenForm"
+    Argument ="Ф_Вход"
+    Argument ="0"
+    Argument =""
+    Argument =""
+    Argument ="-1"
+    Argument ="0"
+End
