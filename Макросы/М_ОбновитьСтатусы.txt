@@ -1,0 +1,15 @@
+Version =196611
+ColumnsShown =0
+Begin
+    Action ="OpenQuery"
+    Argument ="Q09_ОбновлениеСтатусаПроведён"
+    Argument ="0"
+    Argument ="1"
+End
+Begin
+    Action ="MsgBox"
+    Argument ="Статусы прошедших приёмов обновлены."
+    Argument ="-1"
+    Argument ="0"
+    Argument ="Обслуживание"
+End
