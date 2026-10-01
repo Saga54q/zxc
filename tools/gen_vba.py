@@ -16,8 +16,25 @@ TAB = "    "
 
 
 def vba_literal_chunks(s: str, width: int = 840):
+    """Делит текст на фрагменты, не разрывая экранированные пары кавычек."""
     s = s.replace('"', '""')
-    return [s[i:i + width] for i in range(0, len(s), width)] or [""]
+    chunks = []
+    i = 0
+    while i < len(s):
+        end = min(i + width, len(s))
+        if end < len(s):
+            tail = 0
+            while end - 1 - tail >= i and s[end - 1 - tail] == '"':
+                tail += 1
+            if tail % 2 == 1:          # фрагмент заканчивается одиночной кавычкой
+                end -= 1
+                while end > i and s[end - 1] == '"':
+                    end -= 1
+                if end <= i:
+                    end = min(i + width, len(s))
+        chunks.append(s[i:end])
+        i = end
+    return chunks or [""]
 
 
 def vba_expr(sql: str, indent: int = 2) -> str:
@@ -81,8 +98,17 @@ Option Compare Database
 Option Explicit
 
 Private mOk As Long          ' счётчик успешно выполненных операторов
+Private mOkForm As Long      ' счётчик созданных форм
+Private mOkReport As Long    ' счётчик созданных отчётов
+Private mOkQuery As Long     ' счётчик созданных запросов
+Private mOkMacro As Long     ' счётчик загруженных макросов
 Private mErr As Long         ' счётчик ошибок
 Private mLog As String       ' журнал построения
+
+Public gLogin As String      ' логин текущего пользователя
+Public gRole As String       ' роль текущего пользователя
+Public gLevel As Long        ' уровень доступа: 1 - регистратор, 2 - врач, 3 - администратор
+Public gKodVracha As Long    ' код врача (для роли «Врач»)
 """
 
 
@@ -238,13 +264,22 @@ def part_queries():
                            % (q["name"], q["kind"], q["comment"], q["params"])))
         out.append('    On Error Resume Next')
         out.append('    db.QueryDefs.Delete "' + q["name"] + '"')
-        out.append('    On Error GoTo 0')
+        out.append('    Err.Clear')
         if len(sql) <= 840:
             out.append('    Set qd = db.CreateQueryDef("' + q["name"] + '", "' + sql.replace('"', '""') + '")')
         else:
             out.append('    Set qd = db.CreateQueryDef("' + q["name"] + '", ' + vba_expr(sql, indent=2) + ")")
-        out.append('    AddProp qd, "Description", dbText, "' + q["comment"].replace('"', "'") + '"')
-        out.append("    qd.Close")
+        out.append('    If Err.Number <> 0 Then')
+        out.append('        mErr = mErr + 1')
+        out.append('        mLog = mLog & "ОШИБКА запроса ' + q["name"] + ': " & Err.Description & vbCrLf')
+        out.append('        Err.Clear')
+        out.append('    Else')
+        out.append('        AddProp qd, "Description", dbText, "' + q["comment"].replace('"', "'") + '"')
+        out.append('        qd.Close')
+        out.append('        mOk = mOk + 1')
+        out.append('        mOkQuery = mOkQuery + 1')
+        out.append('    End If')
+        out.append('    On Error GoTo 0')
         out.append("")
     out.append('    LogLine "  создано запросов: ' + str(len(QUERIES)) + '"')
     out.append("End Sub")
@@ -266,6 +301,7 @@ Private Sub СоздатьФормуПациенты()
     On Error Resume Next
     DoCmd.Close acForm, frmName, acSaveNo
     DoCmd.DeleteObject acForm, frmName
+    Err.Clear
     On Error GoTo 0
 
     Set frm = Application.CreateForm()
@@ -350,6 +386,7 @@ Private Sub СоздатьФормуЗапись()
     On Error Resume Next
     DoCmd.Close acForm, frmName, acSaveNo
     DoCmd.DeleteObject acForm, frmName
+    Err.Clear
     On Error GoTo 0
 
     Set frm = Application.CreateForm()
@@ -408,7 +445,7 @@ Private Sub СоздатьФормуЗапись()
     Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , 3500, y, 2200, 320)
     ctl.Name = "ПолеДата"
     ctl.ControlSource = "ДатаПриёма"
-    ctl.Format = "Short Date"
+    ctl.Format = "dd.mm.yyyy"
     y = y + 600
 
     Set ctl = CreateFormControl(tmpName, acLabel, acDetail, , , 300, y, 3000, 320)
@@ -418,7 +455,7 @@ Private Sub СоздатьФормуЗапись()
     ctl.ControlSource = "ВремяПриёма"
     ctl.RowSourceType = "Value List"
     ctl.RowSource = "09:00:00;09:30:00;10:00:00;10:30:00;11:00:00;11:30:00;14:00:00;14:30:00;15:00:00;15:30:00;16:00:00;16:30:00"
-    ctl.Format = "Short Time"
+    ctl.Format = "hh:nn"
     ctl.LimitToList = True
     Set ctl = CreateFormControl(tmpName, acCommandButton, acDetail, , , 6100, y, 3600, 380)
     ctl.Name = "КнопкаСвободные"
@@ -516,6 +553,7 @@ Private Sub СоздатьФормуНазначения()
     On Error Resume Next
     DoCmd.Close acForm, frmName, acSaveNo
     DoCmd.DeleteObject acForm, frmName
+    Err.Clear
     On Error GoTo 0
 
     Set frm = Application.CreateForm()
@@ -530,10 +568,9 @@ Private Sub СоздатьФормуНазначения()
     frm.InsideWidth = 13200
     frm.Section(acDetail).Height = 340
     frm.Section(acHeader).Height = 400
-    frm.Section(acFooter).Visible = False
 
     cap = Array("Услуга", "Кол-во", "Цена", "Сумма", "Кратность", "Выполнено")
-    src = Array("Услуга", "Кол-во", "Цена", "Сумма", "Кратность", "Выполнено")
+    src = Array("Услуга", "Количество", "Цена", "Сумма", "Кратность", "Выполнено")
     w = Array(4400, 900, 1200, 1400, 2200, 700)
     x = 100
     For i = 0 To UBound(cap)
@@ -562,6 +599,7 @@ Private Sub СоздатьФормуДиагнозы()
     On Error Resume Next
     DoCmd.Close acForm, frmName, acSaveNo
     DoCmd.DeleteObject acForm, frmName
+    Err.Clear
     On Error GoTo 0
 
     Set frm = Application.CreateForm()
@@ -576,7 +614,6 @@ Private Sub СоздатьФормуДиагнозы()
     frm.InsideWidth = 13200
     frm.Section(acDetail).Height = 340
     frm.Section(acHeader).Height = 400
-    frm.Section(acFooter).Visible = False
 
     cap = Array("Код МКБ", "Наименование", "Тип", "Дата", "Примечание")
     w = Array(1500, 5200, 1800, 1600, 2600)
@@ -621,6 +658,7 @@ Private Sub СоздатьФормуПриём()
     On Error Resume Next
     DoCmd.Close acForm, frmName, acSaveNo
     DoCmd.DeleteObject acForm, frmName
+    Err.Clear
     On Error GoTo 0
 
     Set frm = Application.CreateForm()
@@ -670,9 +708,9 @@ Private Sub СоздатьФормуПриём()
     Set ctl = CreateFormControl(tmpName, acLabel, acDetail, , , 300, y, 2800, 320)
     ctl.Caption = "Дата и время приёма:"
     Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , 3200, y, 2000, 320)
-    ctl.ControlSource = "ДатаПриёма": ctl.Name = "ПолеДата": ctl.Format = "Short Date"
+    ctl.ControlSource = "ДатаПриёма": ctl.Name = "ПолеДата": ctl.Format = "dd.mm.yyyy"
     Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , 5400, y, 1600, 320)
-    ctl.ControlSource = "ВремяПриёма": ctl.Name = "ПолеВремя": ctl.Format = "Short Time"
+    ctl.ControlSource = "ВремяПриёма": ctl.Name = "ПолеВремя": ctl.Format = "hh:nn"
     y = y + 550
 
     Set ctl = CreateFormControl(tmpName, acLabel, acDetail, , , 300, y, 2800, 320)
@@ -775,6 +813,7 @@ Private Sub СоздатьФормуВход()
     On Error Resume Next
     DoCmd.Close acForm, frmName, acSaveNo
     DoCmd.DeleteObject acForm, frmName
+    Err.Clear
     On Error GoTo 0
 
     Set frm = Application.CreateForm()
@@ -842,6 +881,7 @@ Private Sub СоздатьФормуГлавная()
     On Error Resume Next
     DoCmd.Close acForm, frmName, acSaveNo
     DoCmd.DeleteObject acForm, frmName
+    Err.Clear
     On Error GoTo 0
 
     Set frm = Application.CreateForm()
@@ -923,14 +963,58 @@ def part_forms():
     return [FORM_PATIENTS.strip(), FORM_VISIT.strip(), FORM_SUBS.strip(),
             FORM_MAIN_VISIT.strip(), FORM_LOGIN_MENU.strip(),
             """Private Sub СоздатьФормы()
-    СоздатьФормуНазначения
-    СоздатьФормуДиагнозы
-    СоздатьФормуПациенты
-    СоздатьФормуЗапись
-    СоздатьФормуПриём
-    СоздатьФормуВход
-    СоздатьФормуГлавная
-    LogLine "  создано форм: 7 (в том числе 2 подчинённые)"
+    СоздатьФормуБезопасно "Ф_Назначения"
+    СоздатьФормуБезопасно "Ф_Диагнозы"
+    СоздатьФормуБезопасно "Ф_Пациенты"
+    СоздатьФормуБезопасно "Ф_ЗаписьНаПриём"
+    СоздатьФормуБезопасно "Ф_ПриёмПациента"
+    СоздатьФормуБезопасно "Ф_Вход"
+    СоздатьФормуБезопасно "Ф_Главная"
+    LogLine "  форм создано: " & CStr(mOkForm)
+End Sub
+
+Private Sub СоздатьФормуБезопасно(ByVal ИмяФормы As String)
+    ' Каждая форма создаётся независимо: сбой одной формы не прерывает сборку.
+    On Error Resume Next
+    Select Case ИмяФормы
+        Case "Ф_Назначения":     СоздатьФормуНазначения
+        Case "Ф_Диагнозы":       СоздатьФормуДиагнозы
+        Case "Ф_Пациенты":       СоздатьФормуПациенты
+        Case "Ф_ЗаписьНаПриём":  СоздатьФормуЗапись
+        Case "Ф_ПриёмПациента":  СоздатьФормуПриём
+        Case "Ф_Вход":           СоздатьФормуВход
+        Case "Ф_Главная":        СоздатьФормуГлавная
+    End Select
+    If Err.Number <> 0 Then
+        mErr = mErr + 1
+        mLog = mLog & "ОШИБКА при создании формы «" & ИмяФормы & "»: " & _
+               Err.Description & vbCrLf
+        Err.Clear
+        УбратьВременныеОбъекты
+    Else
+        mOk = mOk + 1
+        mOkForm = mOkForm + 1
+    End If
+    On Error GoTo 0
+End Sub
+
+Private Sub УбратьВременныеОбъекты()
+    ' Закрывает и удаляет незавершённые (временные) формы и отчёты.
+    Dim ao As AccessObject
+    On Error Resume Next
+    For Each ao In CurrentProject.AllForms
+        If Left(ao.Name, 2) <> "Ф_" Then
+            DoCmd.Close acForm, ao.Name, acSaveNo
+            DoCmd.DeleteObject acForm, ao.Name
+        End If
+    Next ao
+    For Each ao In CurrentProject.AllReports
+        If Left(ao.Name, 2) <> "О_" Then
+            DoCmd.Close acReport, ao.Name, acSaveNo
+            DoCmd.DeleteObject acReport, ao.Name
+        End If
+    Next ao
+    On Error GoTo 0
 End Sub"""]
 
 
@@ -940,15 +1024,35 @@ REPORTS_CODE = '''Private Sub СоздатьОтчёты()
     fldsЗагрузка = Array("Специальность", "Врач", "Всего талонов", "Принято", "Неявка", "Отменено")
     fldsИстория = Array("Пациент", "№ талона", "Дата", "Время", "Врач", "Специальность", "Статус")
     fldsТалоны = Array("№ талона", "Дата", "Время", "Пациент", "Возраст", "Врач", "Специальность", "Статус")
-    fldsСтоимость = Array("№ талона", "Пациент", "Врач", "Дата", "Услуг назначено", "Сумма, руб.")
+    fldsСтоимость = Array("№ талона", "Пациент", "Врач", "Дата", "Услуг назначено", "Сумма руб")
+    On Error Resume Next
     СоздатьОтчётЗагрузка fldsЗагрузка
+    ОтметитьОтчёт "О_ЗагрузкаВрачей"
     СоздатьОтчёт "О_ИсторияПосещений", "ИСТОРИЯ ПОСЕЩЕНИЙ ПАЦИЕНТА", _
                  "Q02_ИсторияПосещенийПациента", "Пациент", fldsИстория, False
+    ОтметитьОтчёт "О_ИсторияПосещений"
     СоздатьОтчёт "О_ТалоныНаДату", "ЖУРНАЛ ТАЛОНОВ НА ДАТУ", _
                  "Q03_ЖурналЗаписей", "Дата", fldsТалоны, False
+    ОтметитьОтчёт "О_ТалоныНаДату"
     СоздатьОтчёт "О_СтоимостьЛечения", "СТОИМОСТЬ ЛЕЧЕНИЯ ПО ПРИЁМАМ", _
                  "Q07_СтоимостьЛечения", "Врач", fldsСтоимость, True
-    LogLine "  создано отчётов: 4"
+    ОтметитьОтчёт "О_СтоимостьЛечения"
+    On Error GoTo 0
+    LogLine "  отчётов создано: " & CStr(mOkReport)
+End Sub
+
+Private Sub ОтметитьОтчёт(ByVal ИмяОтчёта As String)
+    ' Фиксирует успех или сбой создания очередного отчёта.
+    If Err.Number <> 0 Then
+        mErr = mErr + 1
+        mLog = mLog & "ОШИБКА при создании отчёта «" & ИмяОтчёта & "»: " & _
+               Err.Description & vbCrLf
+        Err.Clear
+        УбратьВременныеОбъекты
+    Else
+        mOk = mOk + 1
+        mOkReport = mOkReport + 1
+    End If
 End Sub
 
 Private Sub СоздатьОтчётЗагрузка(ByVal flds As Variant)
@@ -962,6 +1066,7 @@ Private Sub СоздатьОтчётЗагрузка(ByVal flds As Variant)
     On Error Resume Next
     DoCmd.Close acReport, rptName, acSaveNo
     DoCmd.DeleteObject acReport, rptName
+    Err.Clear
     On Error GoTo 0
 
     Set rpt = Application.CreateReport()
@@ -1047,6 +1152,7 @@ Private Sub СоздатьОтчёт(ByVal rptName As String, ByVal Заголо
     On Error Resume Next
     DoCmd.Close acReport, rptName, acSaveNo
     DoCmd.DeleteObject acReport, rptName
+    Err.Clear
     On Error GoTo 0
 
     Set rpt = Application.CreateReport()
@@ -1093,7 +1199,7 @@ Private Sub СоздатьОтчёт(ByVal rptName As String, ByVal Заголо
     ctl.Caption = "Итого по группе:"
     Set ctl = CreateReportControl(tmpName, acTextBox, acGroupLevel1Footer, , , 5000, 80, 2400, 340)
     If ЕстьСумма Then
-        ctl.ControlSource = "=Sum([Сумма, руб.])"
+        ctl.ControlSource = "=Sum([Сумма руб])"
     Else
         ctl.ControlSource = "=Count(*)"
     End If
@@ -1104,7 +1210,7 @@ Private Sub СоздатьОтчёт(ByVal rptName As String, ByVal Заголо
     ctl.Caption = "ВСЕГО ПО ОТЧЁТУ:"
     Set ctl = CreateReportControl(tmpName, acTextBox, acFooter, , , 5000, 100, 2400, 340)
     If ЕстьСумма Then
-        ctl.ControlSource = "=Sum([Сумма, руб.])"
+        ctl.ControlSource = "=Sum([Сумма руб])"
     Else
         ctl.ControlSource = "=Count(*)"
     End If
@@ -1134,6 +1240,7 @@ MACROS_CODE = '''Private Sub СоздатьМакросы()
         If Dir(p & CStr(names(i)) & ".txt") <> "" Then
             On Error Resume Next
             DoCmd.DeleteObject acMacro, CStr(names(i))
+            Err.Clear
             Application.LoadFromText acMacro, CStr(names(i)), p & CStr(names(i)) & ".txt"
             If Err.Number = 0 Then
                 okCount = okCount + 1
@@ -1147,6 +1254,7 @@ MACROS_CODE = '''Private Sub СоздатьМакросы()
             mLog = mLog & "Файл дампа макроса не найден: " & p & CStr(names(i)) & ".txt" & vbCrLf
         End If
     Next i
+    mOkMacro = okCount
     LogLine "  макросов загружено: " & CStr(okCount) & " из " & CStr(UBound(names) + 1)
 End Sub
 '''
@@ -1165,9 +1273,14 @@ End Sub
 
 MAIN_CODE = '''Public Sub СоздатьБД(Optional ByVal БезДиалогов As Boolean = False)
     Dim t0 As Double
+    On Error GoTo КритическаяОшибка
     t0 = Timer
     mOk = 0
     mErr = 0
+    mOkForm = 0
+    mOkReport = 0
+    mOkQuery = 0
+    mOkMacro = 0
     mLog = ""
 
     If Not БезДиалогов Then
@@ -1209,16 +1322,26 @@ MAIN_CODE = '''Public Sub СоздатьБД(Optional ByVal БезДиалого
                "Успешно выполнено операторов SQL: " & CStr(mOk) & vbCrLf & _
                "Ошибок: " & CStr(mErr) & vbCrLf & _
                "Время построения, с: " & Format(Timer - t0, "0.0") & vbCrLf & vbCrLf & _
-               "Таблиц: 13, запросов: 16, форм: 7, отчётов: 4, макросов: 6.", _
+               "Таблиц: 13, запросов: " & CStr(mOkQuery) & ", форм: " & CStr(mOkForm) & _
+               ", отчётов: " & CStr(mOkReport) & ", макросов: " & CStr(mOkMacro) & ".", _
                vbInformation, "Готово"
 
         If mErr > 0 Then
-            If MsgBox("Показать журнал построения (ошибки)?" & vbCrLf & _
-                      "Журнал также доступен в окне отладки VBA (Ctrl+G).", _
-                      vbYesNo + vbQuestion, "Построение завершено") = vbYes Then
+            If MsgBox("Построение завершено, но с замечаниями (ошибок: " & CStr(mErr) & ")." & vbCrLf & _
+                      "Показать журнал построения? Он также доступен в окне отладки VBA (Ctrl+G).", _
+                      vbYesNo + vbExclamation, "Построение завершено") = vbYes Then
                 MsgBox mLog, vbInformation, "Журнал построения"
             End If
         End If
+    End If
+    Exit Sub
+КритическаяОшибка:
+    mErr = mErr + 1
+    mLog = mLog & vbCrLf & "КРИТИЧЕСКАЯ ОШИБКА: " & Err.Description & vbCrLf & _
+           "  Последний выполненный этап указан в журнале выше." & vbCrLf
+    If Not БезДиалогов Then
+        MsgBox "Построение прервано из-за ошибки:" & vbCrLf & vbCrLf & _
+               Err.Description & vbCrLf & vbCrLf & mLog, vbCritical, "Ошибка построения"
     End If
 End Sub
 
@@ -1359,10 +1482,8 @@ MOD_SECURITY = '''Attribute VB_Name = "ModSecurity"
 Option Compare Database
 Option Explicit
 
-Public gLogin As String        ' логин текущего пользователя
-Public gRole As String         ' роль текущего пользователя
-Public gLevel As Long          ' уровень доступа: 1 - регистратор, 2 - врач, 3 - администратор
-Public gKodVracha As Long      ' код врача (для роли «Врач»)
+' Глобальные переменные сеанса (gLogin, gRole, gLevel, gKodVracha) объявлены
+' в модуле AutoBuild.bas, чтобы не возникало конфликта имён при компиляции.
 
 Public Function ВойтиВСистему(ByVal Логин As String, ByVal Пароль As String) As Boolean
     Dim rs As DAO.Recordset
@@ -1579,7 +1700,7 @@ def macro_text(actions: list) -> str:
 
 MACRO_FILES = {
     "AutoExec": [
-        ("MessageBox", ["База данных «Поликлиника» загружена.", "-1", "0", "Поликлиника"]),
+        ("MsgBox", ["База данных «Поликлиника» загружена.", "-1", "0", "Поликлиника"]),
         ("OpenForm", ["Ф_Вход", "0", "", "", "-1", "0"]),
     ],
     "М_ОткрытьПриём": [
@@ -1587,7 +1708,7 @@ MACRO_FILES = {
     ],
     "М_ОбновитьСтатусы": [
         ("OpenQuery", ["Q09_ОбновлениеСтатусаПроведён", "0", "1"]),
-        ("MessageBox", ["Статусы прошедших приёмов обновлены.", "-1", "0", "Обслуживание"]),
+        ("MsgBox", ["Статусы прошедших приёмов обновлены.", "-1", "0", "Обслуживание"]),
     ],
     "М_ЭкспортОтчётаExcel": [
         ("RunCode", ["ЭкспортВExcel()"]),

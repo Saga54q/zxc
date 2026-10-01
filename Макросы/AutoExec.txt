@@ -1,7 +1,7 @@
 Version =196611
 ColumnsShown =0
 Begin
-    Action ="MessageBox"
+    Action ="MsgBox"
     Argument ="База данных «Поликлиника» загружена."
     Argument ="-1"
     Argument ="0"

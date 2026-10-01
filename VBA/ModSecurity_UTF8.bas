@@ -6,10 +6,8 @@ Attribute VB_Name = "ModSecurity"
 Option Compare Database
 Option Explicit
 
-Public gLogin As String        ' логин текущего пользователя
-Public gRole As String         ' роль текущего пользователя
-Public gLevel As Long          ' уровень доступа: 1 - регистратор, 2 - врач, 3 - администратор
-Public gKodVracha As Long      ' код врача (для роли «Врач»)
+' Глобальные переменные сеанса (gLogin, gRole, gLevel, gKodVracha) объявлены
+' в модуле AutoBuild.bas, чтобы не возникало конфликта имён при компиляции.
 
 Public Function ВойтиВСистему(ByVal Логин As String, ByVal Пароль As String) As Boolean
     Dim rs As DAO.Recordset

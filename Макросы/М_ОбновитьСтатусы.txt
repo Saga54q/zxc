@@ -7,7 +7,7 @@ Begin
     Argument ="1"
 End
 Begin
-    Action ="MessageBox"
+    Action ="MsgBox"
     Argument ="Статусы прошедших приёмов обновлены."
     Argument ="-1"
     Argument ="0"
