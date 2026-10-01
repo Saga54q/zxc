@@ -70,6 +70,8 @@ Public Sub СоздатьБД(Optional ByVal БезДиалогов As Boolean =
     End If
 
     LogLine "=== НАЧАЛО ПОСТРОЕНИЯ: " & Now() & " ==="
+    ' Отключаем системные подтверждения на время удаления объектов
+    ВключитьПредупреждения False
     LogLine "Этап 1/10: очистка предыдущей версии базы данных"
     ОчиститьБД
     LogLine "Этап 2/10: создание таблиц"
@@ -91,6 +93,7 @@ Public Sub СоздатьБД(Optional ByVal БезДиалогов As Boolean =
     LogLine "Этап 10/10: загрузка макросов и настройка запуска"
     СоздатьМакросы
     НастроитьЗапуск
+    ВключитьПредупреждения True
 
     LogLine "=== ОКОНЧАНИЕ: " & Now() & " ==="
     LogLine "Успешно выполнено операторов SQL: " & CStr(mOk)
@@ -116,6 +119,7 @@ Public Sub СоздатьБД(Optional ByVal БезДиалогов As Boolean =
     Exit Sub
 КритическаяОшибка:
     mErr = mErr + 1
+    ВключитьПредупреждения True
     mLog = mLog & vbCrLf & "КРИТИЧЕСКАЯ ОШИБКА: " & Err.Description & vbCrLf & _
            "  Последний выполненный этап указан в журнале выше." & vbCrLf
     If Not БезДиалогов Then
@@ -240,7 +244,7 @@ Private Sub УстановитьСвойстваПолей()
     Set tdf = db.TableDefs("Пациенты")
     Set fld = tdf.Fields("Пол")
     fld.DefaultValue = """М"""
-    fld.ValidationRule = "In (""М"";""Ж"")"
+    fld.ValidationRule = """М"" Or ""Ж"""
     fld.ValidationText = "Пол указывается буквой М или Ж"
     Set fld = tdf.Fields("Телефон")
     AddProp fld, "InputMask", dbText, "8\-900\-000\-00\-00;0;_"
@@ -273,8 +277,9 @@ Private Sub УстановитьСвойстваПолей()
     ' Таблица «МКБ»
     Set tdf = db.TableDefs("МКБ")
     Set fld = tdf.Fields("КодМКБ")
-    AddProp fld, "InputMask", dbText, ">L00.0;;_"
     AddProp fld, "Caption", dbText, "Код МКБ-10"
+    fld.ValidationRule = "Like ""[A-Z][0-9][0-9]*"""
+    fld.ValidationText = "Код МКБ-10 записывается латинскими буквами и цифрами, например I10 или J06.9"
 
     ' Таблица «РасписаниеПриёма»
     Set tdf = db.TableDefs("РасписаниеПриёма")
@@ -304,7 +309,7 @@ Private Sub УстановитьСвойстваПолей()
     fld.ValidationRule = ">= #08:00:00# And <= #20:00:00#"
     fld.ValidationText = "Время приёма должно быть с 08:00 до 20:00"
     Set fld = tdf.Fields("СтатусЗаписи")
-    fld.ValidationRule = "In (""Запланирован"";""Проведён"";""Отменён"";""Неявка"")"
+    fld.ValidationRule = """Запланирован"" Or ""Проведён"" Or ""Отменён"" Or ""Неявка"""
     fld.ValidationText = "Допустимые статусы: Запланирован, Проведён, Отменён, Неявка"
     fld.DefaultValue = """Запланирован"""
     Set fld = tdf.Fields("ДатаСоздания")
@@ -314,7 +319,7 @@ Private Sub УстановитьСвойстваПолей()
     Set tdf = db.TableDefs("Диагнозы")
     Set fld = tdf.Fields("ТипДиагноза")
     fld.DefaultValue = """Основной"""
-    fld.ValidationRule = "In (""Основной"";""Сопутствующий"";""Предварительный"")"
+    fld.ValidationRule = """Основной"" Or ""Сопутствующий"" Or ""Предварительный"""
     Set fld = tdf.Fields("ДатаУстановки")
     AddProp fld, "Format", dbText, "Short Date"
 
@@ -1370,20 +1375,20 @@ Private Sub СоздатьЗапросы()
     Set db = CurrentDb
 
     ' Q01_СвободныеТалоны — Выборка с параметрами. Свободные талоны к врачу по выбранной
-    ' специальности на выбранную дату (специфика задания). Талоны, занятые записью со статусом
-    ' «Отменён», снова считаются свободными. Параметры: [Введите специальность], [Введите дату
-    ' приёма].
+    ' специальности на выбранную дату (специфика задания). Талоны, на которые уже есть запись, не
+    ' выводятся: это соответствует уникальному индексу IX_Zap_Vrach_Time, запрещающему пересечение
+    ' времени приёма у одного врача. Параметры: [Введите специальность], [Введите дату приёма].
     On Error Resume Next
     db.QueryDefs.Delete "Q01_СвободныеТалоны"
     Err.Clear
     Set qd = db.CreateQueryDef("Q01_СвободныеТалоны", "PARAMETERS [Введите специальность] Text ( 255 ), [Введите дату приёма] DateTime; SELECT Специальности.НазваниеСпециальности AS Специальность, [Врачи].[Фамилия] & ' ' & Left([Врачи].[Имя], 1) & '. ' & Left([Врачи].[Отчество], 1) & '.' AS Врач, РасписаниеПриёма.ДатаПриёма AS Дата, РасписаниеПриёма.ВремяНачала AS Начало, РасписаниеПриёма.ВремяОкончания AS Окончание, РасписаниеПриёма.Кабинет AS Каб, РасписаниеПриёма.КодРасписания AS КодСлота FROM (РасписаниеПриёма INNER JOIN Врачи ON РасписаниеПриёма.КодВрача = Врачи.КодВрача) INNER JOIN Специальности ON Врачи.КодСпециальности = Специальности.КодСпециальности WHERE Специальности.НазваниеСпециальности = [Введите специальность] AND РасписаниеПриёма.ДатаПриёма = [Введите дату приёма] AND РасписаниеПриёма.ПризнакПриёма = True AND NOT EXISTS (SELECT 1 FROM ЗаписиНаПриём WHERE ЗаписиНаПри" & _
-        "ём.КодРасписания = РасписаниеПриёма.КодРасписания AND ЗаписиНаПриём.СтатусЗаписи <> 'Отменён') ORDER BY Врачи.Фамилия, РасписаниеПриёма.ВремяНачала")
+        "ём.КодРасписания = РасписаниеПриёма.КодРасписания) ORDER BY Врачи.Фамилия, РасписаниеПриёма.ВремяНачала")
     If Err.Number <> 0 Then
         mErr = mErr + 1
         mLog = mLog & "ОШИБКА запроса Q01_СвободныеТалоны: " & Err.Description & vbCrLf
         Err.Clear
     Else
-        AddProp qd, "Description", dbText, "Свободные талоны к врачу по выбранной специальности на выбранную дату (специфика задания). Талоны, занятые записью со статусом «Отменён», снова считаются свободными."
+        AddProp qd, "Description", dbText, "Свободные талоны к врачу по выбранной специальности на выбранную дату (специфика задания). Талоны, на которые уже есть запись, не выводятся: это соответствует уникальному индексу IX_Zap_Vrach_Time, запрещающему пересечение времени приёма у одного врача."
         qd.Close
         mOk = mOk + 1
         mOkQuery = mOkQuery + 1
@@ -1489,7 +1494,7 @@ Private Sub СоздатьЗапросы()
 
     ' Q07_СтоимостьЛечения — Итоговый с вычисляемыми полями. Стоимость лечения по каждому приёму:
     ' сумма назначенных услуг (вычисляемое поле [Количество] * [Стоимость]). Имя вычисляемого поля
-    ' записано как [Сумма руб] без запятой и точки: MS Access не допускает символы «.» и «,» в
+    ' задано как [Сумма руб] (без запятой и точки): MS Access не допускает символы «.» и «,» в
     ' именах полей (ошибка 3126). Параметры: без параметров.
     On Error Resume Next
     db.QueryDefs.Delete "Q07_СтоимостьЛечения"
@@ -1501,7 +1506,7 @@ Private Sub СоздатьЗапросы()
         mLog = mLog & "ОШИБКА запроса Q07_СтоимостьЛечения: " & Err.Description & vbCrLf
         Err.Clear
     Else
-        AddProp qd, "Description", dbText, "Стоимость лечения по каждому приёму: сумма назначенных услуг (вычисляемое поле [Количество] * [Стоимость]). Имя вычисляемого поля записано как [Сумма руб] без запятой и точки: MS Access не допускает символы «.» и «,» в именах полей (ошибка 3126)."
+        AddProp qd, "Description", dbText, "Стоимость лечения по каждому приёму: сумма назначенных услуг (вычисляемое поле [Количество] * [Стоимость]). Имя вычисляемого поля задано как [Сумма руб] (без запятой и точки): MS Access не допускает символы «.» и «,» в именах полей (ошибка 3126)."
         qd.Close
         mOk = mOk + 1
         mOkQuery = mOkQuery + 1
@@ -1710,9 +1715,9 @@ Private Sub СоздатьФормуПациенты()
     frm.NavigationButtons = True
     frm.DividingLines = True
     frm.InsideWidth = 14200
-    frm.Section(acDetail).Height = 420
-    frm.Section(acHeader).Height = 1000
-    frm.Section(acFooter).Height = 700
+    ЗадатьВысоту frm, acDetail, 420
+    ЗадатьВысоту frm, acHeader, 1000
+    ЗадатьВысоту frm, acFooter, 700
 
     Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 200, 120, 7000, 420)
     ctl.Caption = "КАРТОТЕКА ПАЦИЕНТОВ ПОЛИКЛИНИКИ"
@@ -1791,8 +1796,8 @@ Private Sub СоздатьФормуЗапись()
     frm.Caption = "Запись на приём"
     frm.DefaultView = 0
     frm.InsideWidth = 12400
-    frm.Section(acDetail).Height = 6200
-    frm.Section(acHeader).Height = 700
+    ЗадатьВысоту frm, acDetail, 6200
+    ЗадатьВысоту frm, acHeader, 700
 
     Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 200, 120, 8000, 420)
     ctl.Caption = "ЗАПИСЬ ПАЦИЕНТА НА ПРИЁМ"
@@ -1886,6 +1891,12 @@ Private Sub СоздатьФормуЗапись()
     ctl.Caption = "Закрыть"
     ctl.OnClick = "[Event Procedure]"
 
+    ' Скрытое поле для автоматического заполнения кода талона расписания
+    Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , 10000, 200, 1000, 300)
+    ctl.Name = "ПолеРасписание"
+    ctl.ControlSource = "КодРасписания"
+    ctl.Visible = False
+
     frm.HasModule = True
     frm.Module.AddFromString FormCodeVisit()
 
@@ -1906,8 +1917,33 @@ Private Function FormCodeVisit() As String
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub ПолеВрач_AfterUpdate()" & vbCrLf
     s = s & "    ' Автоматическое формирование номера талона" & vbCrLf
-    s = s & "    If Me.NewRecord Or Len(Nz(Me!НомерТалона, """")) = 0 Then" & vbCrLf
-    s = s & "        Me!НомерТалона = СформироватьНомерТалона(Me!КодВрача, Nz(Me!ДатаПриёма, Date))" & vbCrLf
+    s = s & "    ОбновитьНомерТалон" & vbCrLf
+    s = s & "End Sub" & vbCrLf & vbCrLf
+    s = s & "Private Sub ПолеДата_PropertyChanged()" & vbCrLf
+    s = s & "    ' Дата приёма изменилась - пересчитываем номер талона" & vbCrLf
+    s = s & "    If Me.NewRecord Or Len(Nz(Me!НомерТалона, """")) = 0 Then ОбновитьНомерТалон" & vbCrLf
+    s = s & "End Sub" & vbCrLf & vbCrLf
+    s = s & "Private Sub ПолеВремя_PropertyChanged()" & vbCrLf
+    s = s & "    ' Время приёма изменилось - пересчитываем номер талона и проверяем занятость" & vbCrLf
+    s = s & "    If Me.NewRecord Or Len(Nz(Me!НомерТалона, """")) = 0 Then ОбновитьНомерТалон" & vbCrLf
+    s = s & "End Sub" & vbCrLf & vbCrLf
+    s = s & "Private Sub ОбновитьНомерТалон()" & vbCrLf
+    s = s & "    ' Формирование номера талона и привязка к слоту расписания" & vbCrLf
+    s = s & "    Dim kodSlot As Variant" & vbCrLf
+    s = s & "    On Error Resume Next" & vbCrLf
+    s = s & "    If IsNull(Me!КодВрача) Then Exit Sub" & vbCrLf
+    s = s & "    If Not ВремяСвободно(Me!КодВрача, Nz(Me!ДатаПриёма, Date), Me!ВремяПриёма, Me!КодЗаписи) Then" & vbCrLf
+    s = s & "        MsgBox ""На выбранные дату и время у этого врача уже есть запись. "" & _" & vbCrLf
+    s = s & "               ""Выберите свободный талон."", vbExclamation, ""Контроль расписания""" & vbCrLf
+    s = s & "        Exit Sub" & vbCrLf
+    s = s & "    End If" & vbCrLf
+    s = s & "    Me!НомерТалона = СформироватьНомерТалона(Me!КодВрача, Nz(Me!ДатаПриёма, Date))" & vbCrLf
+    s = s & "    If Not IsNull(Me!ВремяПриёма) Then" & vbCrLf
+    s = s & "        kodSlot = DLookup(""КодРасписания"", ""РасписаниеПриёма"", _" & vbCrLf
+    s = s & "                 ""КодВрача="" & CLng(Me!КодВрача) & "" AND ДатаПриёма=#"" & _" & vbCrLf
+    s = s & "                 Format(Nz(Me!ДатаПриёма, Date), ""yyyy-mm-dd"") & ""# AND ВремяНачала=#"" & _" & vbCrLf
+    s = s & "                 Format(Me!ВремяПриёма, ""hh:nn:ss"") & ""#"")" & vbCrLf
+    s = s & "        Me!ПолеРасписание = kodSlot" & vbCrLf
     s = s & "    End If" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub КнопкаСвободные_Click()" & vbCrLf
@@ -1931,6 +1967,11 @@ End Function
 
 ' ----------------------------------------------------------------------------
 '  Подчинённые формы «Ф_Назначения» и «Ф_Диагнозы»
+'  Формы построены на ТАБЛИЦАХ «Назначения» и «Диагнозы», поэтому они
+'  редактируемые: врач может изменять и удалять строки прямо в подчинённой
+'  форме. Запросы Q12/Q13 содержат соединения таблиц, а такие запросы
+'  в MS Access не допускают изменения данных, поэтому в качестве источника
+'  записей подчинённых форм выбраны таблицы.
 ' ----------------------------------------------------------------------------
 Private Sub СоздатьФормуНазначения()
     Dim frmName As String, tmpName As String
@@ -1952,37 +1993,129 @@ Private Sub СоздатьФормуНазначения()
     DoCmd.RunCommand acCmdFormHdrFtr
     On Error GoTo 0
 
-    frm.RecordSource = "Q13_НазначенияПриёма"
+    frm.RecordSource = "Назначения"
     frm.Caption = "Назначения"
-    frm.DefaultView = 2                  ' 2 = табличное представление
-    frm.InsideWidth = 13200
-    frm.Section(acDetail).Height = 340
-    frm.Section(acHeader).Height = 400
+    frm.DefaultView = 1                  ' 1 = непрерывная (ленточная) форма
+    frm.InsideWidth = 13600
+    ЗадатьВысоту frm, acHeader, 780
+    ЗадатьВысоту frm, acDetail, 340
 
-    cap = Array("Услуга", "Кол-во", "Цена", "Сумма", "Кратность", "Выполнено")
-    src = Array("Услуга", "Количество", "Цена", "Сумма", "Кратность", "Выполнено")
-    w = Array(4400, 900, 1200, 1400, 2200, 700)
+    ' Строка 1 заголовка: выбор услуги и добавление строки в текущий приём
+    Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 100, 60, 900, 300)
+    ctl.Caption = "Услуга:"
+    Set ctl = CreateFormControl(tmpName, acComboBox, acHeader, , , 1000, 40, 4200, 340)
+    ctl.Name = "ПолеУслуга"
+    ctl.RowSourceType = "Table/Query"
+    ctl.RowSource = "SELECT Услуги.КодУслуги, Услуги.НазваниеУслуги, Услуги.Стоимость FROM Услуги ORDER BY Услуги.НазваниеУслуги;"
+    ctl.ColumnCount = 3
+    ctl.ColumnWidths = "0;3000;1200"
+    ctl.BoundColumn = 1
+    ctl.LimitToList = True
+    Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 5300, 60, 800, 300)
+    ctl.Caption = "Кол-во:"
+    Set ctl = CreateFormControl(tmpName, acTextBox, acHeader, , , 6100, 40, 700, 340)
+    ctl.Name = "ПолеКол"
+    ctl.DefaultValue = "1"
+    Set ctl = CreateFormControl(tmpName, acCommandButton, acHeader, , , 6900, 40, 2600, 380)
+    ctl.Name = "КнопкаДобавить"
+    ctl.Caption = "Добавить услугу"
+    ctl.OnClick = "[Event Procedure]"
+    Set ctl = CreateFormControl(tmpName, acCommandButton, acHeader, , , 9600, 40, 2200, 380)
+    ctl.Name = "КнопкаУдалить"
+    ctl.Caption = "Удалить строку"
+    ctl.OnClick = "[Event Procedure]"
+
+    ' Строка 2 заголовка: подписи столбцов ленточной части
+    cap = Array("Услуга", "Кол-во", "Дозировка", "Кратность приёма", "Выполнено")
+    src = Array("КодУслуги", "Количество", "Дозировка", "КратностьПрименения", "Выполнено")
+    w = Array(4200, 900, 2400, 3000, 900)
     x = 100
     For i = 0 To UBound(cap)
-        Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , x, 60, CLng(w(i)), 280)
+        Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , x, 460, CLng(w(i)), 300)
         ctl.Caption = CStr(cap(i))
         ctl.FontBold = True
-        Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , x, 40, CLng(w(i)), 300)
+        x = x + CLng(w(i)) + 60
+    Next i
+
+    ' Строка детали: поля таблицы «Назначения» (доступны для изменения)
+    x = 100
+    For i = 0 To UBound(src)
+        If i = 0 Then
+            Set ctl = CreateFormControl(tmpName, acComboBox, acDetail, , , x, 40, CLng(w(i)), 320)
+            ctl.RowSourceType = "Table/Query"
+            ctl.RowSource = "SELECT Услуги.КодУслуги, Услуги.НазваниеУслуги FROM Услуги ORDER BY Услуги.НазваниеУслуги;"
+            ctl.ColumnCount = 2
+            ctl.ColumnWidths = "0;3800"
+            ctl.BoundColumn = 1
+            ctl.ListWidth = 4200
+            ctl.LimitToList = True
+        Else
+            Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , x, 40, CLng(w(i)), 320)
+        End If
         ctl.ControlSource = "[" & CStr(src(i)) & "]"
         ctl.Name = "ПолеН" & CStr(i + 1)
-        x = x + CLng(w(i)) + 40
+        x = x + CLng(w(i)) + 60
     Next i
+
+    frm.HasModule = True
+    frm.Module.AddFromString FormCodeNazn()
 
     DoCmd.Close acForm, tmpName, acSaveYes
     DoCmd.Rename frmName, acForm, tmpName
     LogLine "  подчинённая форма «Ф_Назначения» создана"
 End Sub
 
+Private Function FormCodeNazn() As String
+    Dim s As String
+    s = "Private Sub КнопкаДобавить_Click()" & vbCrLf
+    s = s & "    ' Добавление назначения к текущему приёму (связь 1:M по КодЗаписи)" & vbCrLf
+    s = s & "    Dim qty As Long" & vbCrLf
+    s = s & "    Dim kodZap As Long" & vbCrLf
+    s = s & "    On Error GoTo EH" & vbCrLf
+    s = s & "    If IsNull(Me.Parent!КодЗаписи) Then" & vbCrLf
+    s = s & "        MsgBox ""Сначала сохраните запись на приём."", vbExclamation, ""Назначения""" & vbCrLf
+    s = s & "        Exit Sub" & vbCrLf
+    s = s & "    End If" & vbCrLf
+    s = s & "    If IsNull(Me!ПолеУслуга) Then" & vbCrLf
+    s = s & "        MsgBox ""Выберите услугу из списка."", vbExclamation, ""Назначения""" & vbCrLf
+    s = s & "        Exit Sub" & vbCrLf
+    s = s & "    End If" & vbCrLf
+    s = s & "    qty = CLng(Nz(Me!ПолеКол, 1))" & vbCrLf
+    s = s & "    If qty < 1 Or qty > 50 Then" & vbCrLf
+    s = s & "        MsgBox ""Количество должно быть от 1 до 50."", vbExclamation, ""Проверка данных""" & vbCrLf
+    s = s & "        Exit Sub" & vbCrLf
+    s = s & "    End If" & vbCrLf
+    s = s & "    kodZap = CLng(Me.Parent!КодЗаписи)" & vbCrLf
+    s = s & "    CurrentDb.Execute ""INSERT INTO Назначения (КодЗаписи, КодУслуги, Количество, ДатаНазначения) "" & _" & vbCrLf
+    s = s & "                      ""VALUES ("" & kodZap & "", "" & CLng(Me!ПолеУслуга) & "", "" & qty & "", Date())"", dbFailOnError" & vbCrLf
+    s = s & "    ЗаписатьВЖурнал Nz(gLogin, ""гость""), ""Назначение услуги"", ""Назначения"", ""Успешно""" & vbCrLf
+    s = s & "    Me.Requery" & vbCrLf
+    s = s & "    Me!ПолеУслуга = Null" & vbCrLf
+    s = s & "    Me!ПолеКол = 1" & vbCrLf
+    s = s & "    Exit Sub" & vbCrLf
+    s = s & "EH:" & vbCrLf
+    s = s & "    MsgBox ""Не удалось добавить назначение: "" & Err.Description, vbCritical, ""Назначения""" & vbCrLf
+    s = s & "End Sub" & vbCrLf & vbCrLf
+    s = s & "Private Sub КнопкаУдалить_Click()" & vbCrLf
+    s = s & "    ' Удаление текущей строки назначения" & vbCrLf
+    s = s & "    If IsNull(Me!КодНазначения) Then Exit Sub" & vbCrLf
+    s = s & "    If MsgBox(""Удалить выбранное назначение?"", vbQuestion + vbYesNo, ""Назначения"") = vbNo Then Exit Sub" & vbCrLf
+    s = s & "    DoCmd.RunCommand acCmdDeleteRecord" & vbCrLf
+    s = s & "    Me.Requery" & vbCrLf
+    s = s & "End Sub" & vbCrLf & vbCrLf
+    s = s & "Private Sub Form_Current()" & vbCrLf
+    s = s & "    ' Обновляем итоговую стоимость приёма на главной форме" & vbCrLf
+    s = s & "    On Error Resume Next" & vbCrLf
+    s = s & "    Me.Parent!ПолеИтог.Requery" & vbCrLf
+    s = s & "End Sub" & vbCrLf
+    FormCodeNazn = s
+End Function
+
 Private Sub СоздатьФормуДиагнозы()
     Dim frmName As String, tmpName As String
     Dim frm As Form
     Dim ctl As Object
-    Dim cap As Variant, w As Variant
+    Dim cap As Variant, src As Variant, w As Variant
     Dim i As Integer, x As Long
     frmName = "Ф_Диагнозы"
 
@@ -1998,40 +2131,118 @@ Private Sub СоздатьФормуДиагнозы()
     DoCmd.RunCommand acCmdFormHdrFtr
     On Error GoTo 0
 
-    frm.RecordSource = "Q12_ДиагнозыПриёма"
+    frm.RecordSource = "Диагнозы"
     frm.Caption = "Диагнозы"
-    frm.DefaultView = 2
-    frm.InsideWidth = 13200
-    frm.Section(acDetail).Height = 340
-    frm.Section(acHeader).Height = 400
+    frm.DefaultView = 1
+    frm.InsideWidth = 13600
+    ЗадатьВысоту frm, acHeader, 780
+    ЗадатьВысоту frm, acDetail, 340
 
-    cap = Array("Код МКБ", "Наименование", "Тип", "Дата", "Примечание")
-    w = Array(1500, 5200, 1800, 1600, 2600)
+    ' Строка 1 заголовка: выбор кода МКБ-10 и добавление диагноза
+    Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 100, 60, 1000, 300)
+    ctl.Caption = "Код МКБ:"
+    Set ctl = CreateFormControl(tmpName, acComboBox, acHeader, , , 1150, 40, 3400, 340)
+    ctl.Name = "ПолеМКБ"
+    ctl.RowSourceType = "Table/Query"
+    ctl.RowSource = "SELECT МКБ.КодМКБ, МКБ.Наименование FROM МКБ ORDER BY МКБ.КодМКБ;"
+    ctl.ColumnCount = 2
+    ctl.ColumnWidths = "1400;6000"
+    ctl.BoundColumn = 1
+    ctl.ListWidth = 7400
+    ctl.LimitToList = True
+    Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 4600, 60, 700, 300)
+    ctl.Caption = "Тип:"
+    Set ctl = CreateFormControl(tmpName, acComboBox, acHeader, , , 5300, 40, 2000, 340)
+    ctl.Name = "ПолеТип"
+    ctl.RowSourceType = "Value List"
+    ctl.RowSource = "Основной;Сопутствующий;Предварительный"
+    ctl.DefaultValue = """Основной"""
+    ctl.LimitToList = True
+    Set ctl = CreateFormControl(tmpName, acCommandButton, acHeader, , , 7400, 40, 2400, 380)
+    ctl.Name = "КнопкаДобавить"
+    ctl.Caption = "Добавить диагноз"
+    ctl.OnClick = "[Event Procedure]"
+    Set ctl = CreateFormControl(tmpName, acCommandButton, acHeader, , , 9900, 40, 2000, 380)
+    ctl.Name = "КнопкаУдалить"
+    ctl.Caption = "Удалить строку"
+    ctl.OnClick = "[Event Procedure]"
+
+    ' Строка 2 заголовка: подписи столбцов
+    cap = Array("Код МКБ", "Тип диагноза", "Дата установки", "Примечание")
+    src = Array("КодМКБ", "ТипДиагноза", "ДатаУстановки", "Примечание")
+    w = Array(1500, 1800, 1800, 4000)
     x = 100
     For i = 0 To UBound(cap)
-        Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , x, 60, CLng(w(i)), 280)
+        Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , x, 460, CLng(w(i)), 300)
         ctl.Caption = CStr(cap(i))
         ctl.FontBold = True
+        x = x + CLng(w(i)) + 60
+    Next i
+
+    ' Строка детали: поля таблицы «Диагнозы»
+    x = 100
+    For i = 0 To UBound(src)
         If i = 0 Then
-            Set ctl = CreateFormControl(tmpName, acComboBox, acDetail, , , x, 40, CLng(w(i)), 300)
+            Set ctl = CreateFormControl(tmpName, acComboBox, acDetail, , , x, 40, CLng(w(i)), 320)
             ctl.RowSourceType = "Table/Query"
             ctl.RowSource = "SELECT МКБ.КодМКБ, МКБ.Наименование FROM МКБ ORDER BY МКБ.КодМКБ;"
             ctl.ColumnCount = 2
             ctl.ColumnWidths = "1400;6000"
             ctl.BoundColumn = 1
             ctl.ListWidth = 7400
+            ctl.LimitToList = True
         Else
-            Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , x, 40, CLng(w(i)), 300)
+            Set ctl = CreateFormControl(tmpName, acTextBox, acDetail, , , x, 40, CLng(w(i)), 320)
         End If
-        ctl.ControlSource = "[" & CStr(cap(i)) & "]"
+        ctl.ControlSource = "[" & CStr(src(i)) & "]"
         ctl.Name = "ПолеД" & CStr(i + 1)
-        x = x + CLng(w(i)) + 40
+        x = x + CLng(w(i)) + 60
     Next i
+
+    frm.HasModule = True
+    frm.Module.AddFromString FormCodeDiag()
 
     DoCmd.Close acForm, tmpName, acSaveYes
     DoCmd.Rename frmName, acForm, tmpName
     LogLine "  подчинённая форма «Ф_Диагнозы» создана"
 End Sub
+
+Private Function FormCodeDiag() As String
+    Dim s As String
+    s = "Private Sub КнопкаДобавить_Click()" & vbCrLf
+    s = s & "    ' Добавление диагноза к текущему приёму" & vbCrLf
+    s = s & "    Dim kodZap As Long" & vbCrLf
+    s = s & "    Dim kodMKB As String" & vbCrLf
+    s = s & "    Dim tip As String" & vbCrLf
+    s = s & "    On Error GoTo EH" & vbCrLf
+    s = s & "    If IsNull(Me.Parent!КодЗаписи) Then" & vbCrLf
+    s = s & "        MsgBox ""Сначала сохраните запись на приём."", vbExclamation, ""Диагнозы""" & vbCrLf
+    s = s & "        Exit Sub" & vbCrLf
+    s = s & "    End If" & vbCrLf
+    s = s & "    If IsNull(Me!ПолеМКБ) Then" & vbCrLf
+    s = s & "        MsgBox ""Выберите код МКБ-10 из списка."", vbExclamation, ""Диагнозы""" & vbCrLf
+    s = s & "        Exit Sub" & vbCrLf
+    s = s & "    End If" & vbCrLf
+    s = s & "    kodZap = CLng(Me.Parent!КодЗаписи)" & vbCrLf
+    s = s & "    kodMKB = Replace(Nz(Me!ПолеМКБ, """"), ""'"", ""''"")" & vbCrLf
+    s = s & "    tip = Replace(Nz(Me!ПолеТип, ""Основной""), ""'"", ""''"")" & vbCrLf
+    s = s & "    CurrentDb.Execute ""INSERT INTO Диагнозы (КодЗаписи, КодМКБ, ТипДиагноза, ДатаУстановки) "" & _" & vbCrLf
+    s = s & "                      ""VALUES ("" & kodZap & "", '"" & kodMKB & ""', '"" & tip & ""', Date())"", dbFailOnError" & vbCrLf
+    s = s & "    ЗаписатьВЖурнал Nz(gLogin, ""гость""), ""Установка диагноза"", ""Диагнозы"", ""Успешно""" & vbCrLf
+    s = s & "    Me.Requery" & vbCrLf
+    s = s & "    Me!ПолеМКБ = Null" & vbCrLf
+    s = s & "    Exit Sub" & vbCrLf
+    s = s & "EH:" & vbCrLf
+    s = s & "    MsgBox ""Не удалось добавить диагноз: "" & Err.Description, vbCritical, ""Диагнозы""" & vbCrLf
+    s = s & "End Sub" & vbCrLf & vbCrLf
+    s = s & "Private Sub КнопкаУдалить_Click()" & vbCrLf
+    s = s & "    If IsNull(Me!КодДиагноза) Then Exit Sub" & vbCrLf
+    s = s & "    If MsgBox(""Удалить выбранный диагноз?"", vbQuestion + vbYesNo, ""Диагнозы"") = vbNo Then Exit Sub" & vbCrLf
+    s = s & "    DoCmd.RunCommand acCmdDeleteRecord" & vbCrLf
+    s = s & "    Me.Requery" & vbCrLf
+    s = s & "End Sub" & vbCrLf
+    FormCodeDiag = s
+End Function
 
 ' ----------------------------------------------------------------------------
 '  Главная форма «Ф_ПриёмПациента» с двумя подчинёнными формами
@@ -2058,11 +2269,14 @@ Private Sub СоздатьФормуПриём()
     frm.RecordSource = "ЗаписиНаПриём"
     frm.Caption = "Приём пациента"
     frm.DefaultView = 0
+    ' Записи на приём создаёт регистратор в форме «Ф_ЗаписьНаПриём»; в карте приёма
+    ' врач работает с диагнозами и назначениями, не удаляя и не добавляя приёмы.
     frm.AllowDeletions = False
+    frm.AllowAdditions = False
     frm.InsideWidth = 15000
-    frm.Section(acDetail).Height = 7600
-    frm.Section(acHeader).Height = 800
-    frm.Section(acFooter).Height = 700
+    ЗадатьВысоту frm, acDetail, 7600
+    ЗадатьВысоту frm, acHeader, 800
+    ЗадатьВысоту frm, acFooter, 700
 
     Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 300, 150, 9000, 500)
     ctl.Caption = "КАРТА ПРИЁМА ПАЦИЕНТА"
@@ -2174,9 +2388,13 @@ Private Function FormCodePriem() As String
     s = s & "    On Error Resume Next" & vbCrLf
     s = s & "    Me!ПФ_Назначения.Requery" & vbCrLf
     s = s & "    Me!ПФ_Диагнозы.Requery" & vbCrLf
+    s = s & "    Me!ПолеИтог.Requery" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub КнопкаОбновить_Click()" & vbCrLf
     s = s & "    Me.Requery" & vbCrLf
+    s = s & "    Me!ПФ_Назначения.Requery" & vbCrLf
+    s = s & "    Me!ПФ_Диагнозы.Requery" & vbCrLf
+    s = s & "    Me!ПолеИтог.Requery" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub КнопкаПечать_Click()" & vbCrLf
     s = s & "    DoCmd.OpenReport ""О_ТалоныНаДату"", acViewPreview" & vbCrLf
@@ -2214,8 +2432,8 @@ Private Sub СоздатьФормуВход()
     frm.NavigationButtons = False
     frm.DividingLines = False
     frm.InsideWidth = 8200
-    frm.Section(acDetail).Height = 3200
-    frm.Section(acHeader).Height = 700
+    ЗадатьВысоту frm, acDetail, 3200
+    ЗадатьВысоту frm, acHeader, 700
 
     Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 300, 150, 7400, 450)
     ctl.Caption = "БАЗА ДАННЫХ «ПОЛИКЛИНИКА»"
@@ -2280,8 +2498,8 @@ Private Sub СоздатьФормуГлавная()
     frm.RecordSource = ""
     frm.NavigationButtons = False
     frm.InsideWidth = 9000
-    frm.Section(acDetail).Height = 5400
-    frm.Section(acHeader).Height = 800
+    ЗадатьВысоту frm, acDetail, 5400
+    ЗадатьВысоту frm, acHeader, 800
 
     Set ctl = CreateFormControl(tmpName, acLabel, acHeader, , , 300, 150, 8000, 500)
     ctl.Caption = "ПОЛИКЛИНИКА: РАБОЧЕЕ МЕСТО"
@@ -2311,29 +2529,51 @@ End Sub
 Private Function FormCodeMenu() As String
     Dim s As String
     s = "Private Sub Form_Open(Cancel As Integer)" & vbCrLf
+    s = s & "    ' Настройка доступности кнопок в зависимости от роли пользователя" & vbCrLf
     s = s & "    Me.Caption = ""Поликлиника — "" & Nz(gRole, ""гость"") & "" ("" & Nz(gLogin, """") & "")""" & vbCrLf
     s = s & "    Me!Кнопка2.Enabled = (Nz(gLevel, 0) >= 2)" & vbCrLf
+    s = s & "    Me!Кнопка4.Enabled = (Nz(gLevel, 0) >= 2)" & vbCrLf
+    s = s & "    Me!Кнопка5.Enabled = (Nz(gLevel, 0) >= 2)" & vbCrLf
+    s = s & "    Me!Кнопка6.Enabled = (Nz(gLevel, 0) >= 2)" & vbCrLf
     s = s & "    Me!Кнопка7.Enabled = (Nz(gLevel, 0) >= 3)" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
+    s = s & "Private Function ЕстьДоступ(ByVal Уровень As Long, ByVal Операция As String) As Boolean" & vbCrLf
+    s = s & "    ' Ролевое разграничение доступа: проверка уровня и запись отказа в журнал" & vbCrLf
+    s = s & "    If ИметьПраво(Уровень) Then" & vbCrLf
+    s = s & "        ЕстьДоступ = True" & vbCrLf
+    s = s & "    Else" & vbCrLf
+    s = s & "        ЗаписатьВЖурнал Nz(gLogin, ""гость""), ""Отказ в доступе"", Операция, ""Отказано""" & vbCrLf
+    s = s & "        MsgBox ""Недостаточно прав для операции «"" & Операция & ""»."" & vbCrLf & _" & vbCrLf
+    s = s & "               ""Ваша роль: "" & Nz(gRole, ""гость"") & "" (уровень "" & Nz(gLevel, 0) & "")."", _" & vbCrLf
+    s = s & "               vbExclamation, ""Доступ запрещён""" & vbCrLf
+    s = s & "    End If" & vbCrLf
+    s = s & "End Function" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка1_Click()" & vbCrLf
+    s = s & "    If Not ЕстьДоступ(1, ""Запись пациента на приём"") Then Exit Sub" & vbCrLf
     s = s & "    DoCmd.OpenForm ""Ф_ЗаписьНаПриём"", , , , acFormAdd" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка2_Click()" & vbCrLf
+    s = s & "    If Not ЕстьДоступ(2, ""Приём пациента"") Then Exit Sub" & vbCrLf
     s = s & "    DoCmd.OpenForm ""Ф_ПриёмПациента""" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка3_Click()" & vbCrLf
+    s = s & "    If Not ЕстьДоступ(1, ""Просмотр картотеки пациентов"") Then Exit Sub" & vbCrLf
     s = s & "    DoCmd.OpenForm ""Ф_Пациенты""" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка4_Click()" & vbCrLf
+    s = s & "    If Not ЕстьДоступ(2, ""Отчёт «Загрузка врачей»"") Then Exit Sub" & vbCrLf
     s = s & "    DoCmd.OpenReport ""О_ЗагрузкаВрачей"", acViewPreview" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка5_Click()" & vbCrLf
+    s = s & "    If Not ЕстьДоступ(2, ""Отчёт «История посещений»"") Then Exit Sub" & vbCrLf
     s = s & "    DoCmd.OpenReport ""О_ИсторияПосещений"", acViewPreview" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка6_Click()" & vbCrLf
+    s = s & "    If Not ЕстьДоступ(2, ""Отчёт «Стоимость лечения»"") Then Exit Sub" & vbCrLf
     s = s & "    DoCmd.OpenReport ""О_СтоимостьЛечения"", acViewPreview" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка7_Click()" & vbCrLf
+    s = s & "    If Not ЕстьДоступ(3, ""Резервное копирование"") Then Exit Sub" & vbCrLf
     s = s & "    СоздатьРезервнуюКопию" & vbCrLf
     s = s & "End Sub" & vbCrLf & vbCrLf
     s = s & "Private Sub Кнопка8_Click()" & vbCrLf
@@ -2463,11 +2703,11 @@ Private Sub СоздатьОтчётЗагрузка(ByVal flds As Variant)
     rpt.RecordSource = "Q06_ЗагрузкаВрачейЗаПериод"
     rpt.Caption = "Загрузка врачей по специальностям"
     rpt.Width = 14400
-    rpt.Section(acHeader).Height = 1100
-    rpt.Section(acPageHeader).Height = 480
-    rpt.Section(acDetail).Height = 420
-    rpt.Section(acFooter).Height = 700
-    rpt.Section(acPageFooter).Height = 460
+    ЗадатьВысоту rpt, acHeader, 1100
+    ЗадатьВысоту rpt, acPageHeader, 480
+    ЗадатьВысоту rpt, acDetail, 420
+    ЗадатьВысоту rpt, acFooter, 700
+    ЗадатьВысоту rpt, acPageFooter, 460
 
     Set ctl = CreateReportControl(tmpName, acLabel, acHeader, , , 300, 100, 12000, 520)
     ctl.Caption = "ЗАГРУЗКА ВРАЧЕЙ ПО СПЕЦИАЛЬНОСТЯМ"
@@ -2476,8 +2716,8 @@ Private Sub СоздатьОтчётЗагрузка(ByVal flds As Variant)
     ctl.Caption = "Отчёт сформирован: " & Format(Date, "dd.mm.yyyy") & " г."
 
     grpLvl = Application.CreateGroupLevel(tmpName, "Специальность", True, True)
-    rpt.Section(acGroupLevel1Header).Height = 480
-    rpt.Section(acGroupLevel1Footer).Height = 520
+    ЗадатьВысоту rpt, acGroupLevel1Header, 480
+    ЗадатьВысоту rpt, acGroupLevel1Footer, 520
     Set ctl = CreateReportControl(tmpName, acTextBox, acGroupLevel1Header, , , 300, 60, 6400, 360)
     ctl.ControlSource = "Специальность"
     ctl.Name = "ПолеГруппа"
@@ -2549,19 +2789,19 @@ Private Sub СоздатьОтчёт(ByVal rptName As String, ByVal Заголо
     rpt.RecordSource = Источник
     rpt.Caption = Заголовок
     rpt.Width = 14400
-    rpt.Section(acHeader).Height = 900
-    rpt.Section(acPageHeader).Height = 480
-    rpt.Section(acDetail).Height = 420
-    rpt.Section(acFooter).Height = 700
-    rpt.Section(acPageFooter).Height = 460
+    ЗадатьВысоту rpt, acHeader, 900
+    ЗадатьВысоту rpt, acPageHeader, 480
+    ЗадатьВысоту rpt, acDetail, 420
+    ЗадатьВысоту rpt, acFooter, 700
+    ЗадатьВысоту rpt, acPageFooter, 460
 
     Set ctl = CreateReportControl(tmpName, acLabel, acHeader, , , 300, 100, 12000, 520)
     ctl.Caption = Заголовок
     ctl.FontName = "Tahoma": ctl.FontSize = 16: ctl.FontBold = True
 
     grpLvl = Application.CreateGroupLevel(tmpName, ПолеГруппы, True, True)
-    rpt.Section(acGroupLevel1Header).Height = 480
-    rpt.Section(acGroupLevel1Footer).Height = 520
+    ЗадатьВысоту rpt, acGroupLevel1Header, 480
+    ЗадатьВысоту rpt, acGroupLevel1Footer, 520
     Set ctl = CreateReportControl(tmpName, acTextBox, acGroupLevel1Header, , , 300, 60, 6400, 360)
     ctl.ControlSource = "[" & ПолеГруппы & "]"
     ctl.Name = "ПолеГруппа"
@@ -2661,13 +2901,16 @@ End Sub
 ' ============================================================================
 '  СЛУЖЕБНЫЕ ПРОЦЕДУРЫ
 ' ============================================================================
-Private Function DB() As DAO.Database
-    Set DB = CurrentDb
+Private Function Db() As DAO.Database
+    ' Имя функции начинается со строчной буквы: в VBA имя процедуры (DB)
+    ' совпадало бы с именем переменной цикла (db), что приводит к ошибке
+    ' компиляции «Ambiguous name detected» (неоднозначное имя).
+    Set Db = CurrentDb
 End Function
 
 Private Function Exec(ByVal sqlText As String) As Boolean
     On Error GoTo EH
-    DB.Execute sqlText, dbFailOnError
+    Db.Execute sqlText, dbFailOnError
     mOk = mOk + 1
     Exec = True
     Exit Function
@@ -2678,7 +2921,7 @@ End Function
 
 Private Function ExecSilent(ByVal sqlText As String) As Boolean
     On Error Resume Next
-    DB.Execute sqlText, dbFailOnError
+    Db.Execute sqlText, dbFailOnError
     ExecSilent = (Err.Number = 0)
     Err.Clear
 End Function
@@ -2701,6 +2944,21 @@ End Sub
 Private Sub LogLine(ByVal s As String)
     Debug.Print s
     mLog = mLog & s & vbCrLf
+End Sub
+
+Private Sub ЗадатьВысоту(ByRef obj As Object, ByVal Раздел As Integer, ByVal Высота As Long)
+    ' Безопасная установка высоты раздела формы или отчёта: если раздел
+    ' отсутствует (не создан заголовок/примечание), ошибка игнорируется.
+    On Error Resume Next
+    obj.Section(Раздел).Height = Высота
+    Err.Clear
+End Sub
+
+Private Sub ВключитьПредупреждения(ByVal Режим As Boolean)
+    ' Единая точка управления системными подтверждениями MS Access.
+    On Error Resume Next
+    DoCmd.SetWarnings Режим
+    Err.Clear
 End Sub
 
 Private Sub ОчиститьБД()
@@ -2738,7 +2996,7 @@ Public Sub ЗаписатьВЖурнал(ByVal Логин As String, ByVal Де
               "VALUES (Now(), '" & Replace(Логин, "'", "''") & "', '" & _
               Replace(Действие, "'", "''") & "', '" & Replace(Объект, "'", "''") & _
               "', '" & Результат & "')"
-    DB.Execute sqlText, dbFailOnError
+    Db.Execute sqlText, dbFailOnError
 End Sub
 
 Public Function СформироватьНомерТалона(ByVal КодВрача As Variant, _

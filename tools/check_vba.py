@@ -113,6 +113,79 @@ def check_module(path):
     return decls, publics
 
 
+def _proc_bodies(text, name_re):
+    """Возвращает карту «имя процедуры -> текст её тела»."""
+    lines = text.splitlines()
+    bodies, cur, buf = {}, None, []
+    for line in lines:
+        m = re.match(r"\s*(?:Private|Public|Friend)\s+(?:Sub|Function)\s+(\w+)", line)
+        if m and re.match(name_re, m.group(1)):
+            cur, buf = m.group(1), []
+            continue
+        if cur is not None:
+            if re.match(r"\s*End (?:Sub|Function)", line):
+                bodies[cur] = buf
+                cur = None
+            else:
+                buf.append(line)
+    return bodies
+
+
+def _module_text(body):
+    """Склеивает VBA-литералы из строк вида  s = s & "..."  (модуль формы/отчёта)."""
+    parts = []
+    for line in body:
+        for lit in re.finditer(r'"(?:[^"]|"")*"', line):
+            s = lit.group(0)
+            if s.startswith('""'):
+                continue
+            parts.append(s[1:-1].replace('""', '"'))
+    return "\n".join(parts)
+
+
+def check_form_modules(text, table_fields, query_aliases):
+    """Проверяет модули, которые сборщик формирует для форм динамически:
+    баланс блоков, а также ссылки Me!<Имя> на существующие элементы управления
+    или поля источника записей."""
+    creators = _proc_bodies(text, r"^СоздатьФорму")
+    codes = _proc_bodies(text, r"^FormCode")
+    # какая процедура создания формы подключает какой модуль
+    links = {}
+    for cname, body in creators.items():
+        joined = "\n".join(body)
+        for ccode in codes:
+            if "AddFromString %s()" % ccode in joined:
+                links[ccode] = cname
+    for ccode, cname in sorted(links.items()):
+        code = _module_text(codes[ccode])
+        for open_kw, close_kw in (("Sub", "End Sub"), ("Function", "End Function")):
+            opened = len(re.findall(r"(?m)^\s*(?:Private |Public )?%s \w+" % open_kw, code))
+            closed = len(re.findall(r"(?m)^\s*%s" % close_kw, code))
+            if opened != closed:
+                problems.append("%s -> %s: несбалансированные блоки %s/%s: %d != %d"
+                                % (cname, ccode, open_kw, close_kw, opened, closed))
+        opened = len(re.findall(r"(?m)^\s*If\b.*\bThen\s*$", code))
+        closed = len(re.findall(r"(?m)^\s*End If\b", code))
+        if opened != closed:
+            problems.append("%s -> %s: несбалансированные блоки If/End If: %d != %d"
+                            % (cname, ccode, opened, closed))
+        src_text = "\n".join(creators[cname])
+        ctl_names = set(re.findall(r'ctl\.Name = "([^"]+)"', src_text))
+        # элементы, имена которых формируются в цикле (ПолеН1, ПолеД2 и т. п.)
+        loop_names = re.findall(r'ctl\.Name = "([^"]*)" & CStr\(i \+ 1\)', src_text)
+        # поля источника записей формы (таблица или запрос с псевдонимами полей)
+        known_fields = set(table_fields)
+        for m in re.finditer(r'frm\.RecordSource = "([^"]*)"', src_text):
+            known_fields |= query_aliases.get(m.group(1), set())
+        for ref in set(re.findall(r"Me!\s*(?:\[)?([A-Za-zА-Яа-яЁё_][\w]*)", code)):
+            if ref in ctl_names or ref in known_fields:
+                continue
+            if any(ref.startswith(prefix) for prefix in loop_names):
+                continue
+            problems.append("%s -> %s: ссылка Me!%s не найдена среди элементов управления формы"
+                            % (cname, ccode, ref))
+
+
 def main():
     modules = ["VBA/AutoBuild_UTF8.bas", "VBA/ModSecurity_UTF8.bas", "VBA/ModAdmin_UTF8.bas"]
     all_proc, all_pub = {}, {}
@@ -157,7 +230,21 @@ def main():
             known.add(m.group(1))
         for m in re.finditer(r"(?<![\w.\]])\b([А-ЯЁ][А-Яа-яЁё0-9_]+)\b(?!\s*[.(])", select):
             known.add(m.group(1))
+    all_fields = set()
+    for tbl in TABLES:
+        all_fields.update(f[0] for f in tbl["fields"])
+    query_aliases = {}
+    for q in QUERIES:
+        from_pos = re.search(r"\bFROM\b", q["sql"], re.IGNORECASE)
+        select = q["sql"][:from_pos.start()] if from_pos else q["sql"]
+        names = set()
+        for m in re.finditer(r"\bAS\s+\[([^\]]+)\]", select, re.IGNORECASE):
+            names.add(m.group(1))
+        for m in re.finditer(r"\bAS\s+([\wА-Яа-яЁё]+)(?!\s*\[)", select, re.IGNORECASE):
+            names.add(m.group(1))
+        query_aliases[q["name"]] = names
     vba = io.open(os.path.join(ROOT, "VBA", "AutoBuild_UTF8.bas"), encoding="utf-8").read()
+    check_form_modules(vba, all_fields, query_aliases)
     for m in re.finditer(r'(?:ControlSource|RowSource)\s*=\s*("[^"]*")', vba):
         literal = m.group(1)
         if literal.startswith('"="='):            # выражение-вычисление, разбираем ниже
