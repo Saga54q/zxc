@@ -277,8 +277,9 @@ Private Sub УстановитьСвойстваПолей()
     ' Таблица «МКБ»
     Set tdf = db.TableDefs("МКБ")
     Set fld = tdf.Fields("КодМКБ")
-    AddProp fld, "InputMask", dbText, ">L00.0;;_"
     AddProp fld, "Caption", dbText, "Код МКБ-10"
+    fld.ValidationRule = "Like ""[A-Z][0-9][0-9]*"""
+    fld.ValidationText = "Код МКБ-10 записывается латинскими буквами и цифрами, например I10 или J06.9"
 
     ' Таблица «РасписаниеПриёма»
     Set tdf = db.TableDefs("РасписаниеПриёма")
